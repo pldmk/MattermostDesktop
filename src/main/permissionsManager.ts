@@ -7,13 +7,17 @@ import type {
     MediaAccessPermissionRequest,
     OpenExternalPermissionRequest,
     PermissionRequest,
-    WebContents} from 'electron';
+    WebContents,
+    Session,
+} from 'electron';
 import {
     app,
     dialog,
     ipcMain,
     shell,
     systemPreferences,
+    session,
+    desktopCapturer,
 } from 'electron';
 
 import {
@@ -24,21 +28,23 @@ import {
 } from 'common/communication';
 import Config from 'common/config';
 import JsonFileManager from 'common/JsonFileManager';
-import {Logger} from 'common/log';
-import type {MattermostServer} from 'common/servers/MattermostServer';
-import {isTrustedURL, parseURL} from 'common/utils/url';
-import {t} from 'common/utils/util';
-import {permissionsJson} from 'main/constants';
-import {localizeMessage} from 'main/i18nManager';
+import { Logger } from 'common/log';
+import type { MattermostServer } from 'common/servers/MattermostServer';
+import { isTrustedURL, parseURL } from 'common/utils/url';
+import { t } from 'common/utils/util';
+import { permissionsJson } from 'main/constants';
+import { localizeMessage } from 'main/i18nManager';
 import ViewManager from 'main/views/viewManager';
 import CallsWidgetWindow from 'main/windows/callsWidgetWindow';
 import MainWindow from 'main/windows/mainWindow';
 
-import type {Permissions} from 'types/permissions';
+import type { Permissions } from 'types/permissions';
 
 const log = new Logger('PermissionsManager');
 
-// supported permission types
+// -----------------------------------------------------------------------------
+// Поддерживаемые типы пермишенов (добавлен 'display-capture' как алиас screenShare)
+// -----------------------------------------------------------------------------
 const supportedPermissionTypes = [
     'media',
     'geolocation',
@@ -47,15 +53,17 @@ const supportedPermissionTypes = [
     'openExternal',
     'clipboard-sanitized-write',
     'screenShare',
+    'display-capture', // <— новый алиас для Electron/Chromium
 ];
 
-// permissions that require a dialog
+// Пермишены, которые спрашиваем у пользователя
 const authorizablePermissionTypes = [
     'media',
     'geolocation',
     'notifications',
     'openExternal',
     'screenShare',
+    'display-capture', // <— чтобы диалог показывался по алиасу тоже
 ];
 
 type PermissionsByOrigin = {
@@ -64,8 +72,14 @@ type PermissionsByOrigin = {
 
 type PermissionRequestHandlerHandlerDetails = PermissionRequest & FilesystemPermissionRequest & MediaAccessPermissionRequest & OpenExternalPermissionRequest;
 
+// Нормализуем 'display-capture' -> 'screenShare' для внутренней логики
+function normalizePermission(p: string) {
+    return p === 'display-capture' ? 'screenShare' : p;
+}
+
 export class PermissionsManager extends JsonFileManager<PermissionsByOrigin> {
     private inflightPermissionChecks: Map<string, Promise<boolean>>;
+    private wiredSessions = new WeakSet<Session>();
 
     constructor(file: string) {
         super(file);
@@ -75,7 +89,106 @@ export class PermissionsManager extends JsonFileManager<PermissionsByOrigin> {
         ipcMain.on(OPEN_WINDOWS_CAMERA_PREFERENCES, this.openWindowsCameraPreferences);
         ipcMain.on(OPEN_WINDOWS_MICROPHONE_PREFERENCES, this.openWindowsMicrophonePreferences);
         ipcMain.handle(GET_MEDIA_ACCESS_STATUS, this.handleGetMediaAccessStatus);
+
+        // Подключаем обработчик display media ко всем сессиям
+        this.initDisplayMediaWiring();
     }
+
+    // -------------------------------------------------------------------------
+    // Инициализация display media (экранный шэринг) для всех сессий
+    // -------------------------------------------------------------------------
+    private initDisplayMediaWiring = () => {
+        const wire = (ses: Session) => this.wireDisplayMediaForSession(ses);
+
+        app.whenReady().then(() => {
+            try { wire(session.defaultSession); } catch (e) { log.error('wire defaultSession failed', e); }
+
+            // Любые новые WebContents -> берём их session и вешаем хэндлер
+            app.on('web-contents-created', (_e, wc) => {
+                try { wire(wc.session); } catch (err) { log.error('wire session on web-contents-created failed', err); }
+            });
+        });
+    };
+
+    private wireDisplayMediaForSession = (ses: Session) => {
+        if (!ses || this.wiredSessions.has(ses)) {
+            return;
+        }
+        this.wiredSessions.add(ses);
+
+        // Основной обработчик getDisplayMedia
+        ses.setDisplayMediaRequestHandler(async (request, callback) => {
+            try {
+                const { webContents, frame, securityOrigin } = request as any;
+
+                // Пропускаем через нашу общую политику/диалог
+                const granted = await this.doPermissionRequest(
+                    webContents?.id ?? -1,
+                    'screenShare',
+                    {
+                        // минимально достаточные поля
+                        requestingUrl: securityOrigin,
+                        securityOrigin,
+                    } as unknown as PermissionRequestHandlerHandlerDetails,
+                );
+
+                if (!granted) {
+                    callback({});
+                    return;
+                }
+
+                // 1) Если хотим «захват вкладки» — можно вернуть сам frame
+                // Это самый «бесшовный» UX, без пикера
+                if (frame && (request as any).requestedVideo) {
+                    callback({
+                        video: frame,
+                        // Для Windows можно включить системный звук:
+                        // audio: process.platform === 'win32' ? 'loopback' : undefined,
+                    });
+                    return;
+                }
+
+                // 2) Иначе — выбираем источник через desktopCapturer
+                // Тут для простоты берём первый доступный экран/окно.
+                // При желании замените на свой пикер (BrowserWindow с выбором sources).
+                const sources = await desktopCapturer.getSources({
+                    types: ['screen', 'window'],
+                });
+
+                const picked = sources[0];
+                if (!picked) {
+                    callback({});
+                    return;
+                }
+
+                callback({
+                    video: picked,
+                    // Для Windows можно включить системный звук:
+                    // audio: process.platform === 'win32' ? 'loopback' : undefined,
+                });
+            } catch (e) {
+                log.error('setDisplayMediaRequestHandler error', e);
+                callback({});
+            }
+        });
+
+        // На всякий случай: если где-то используется общий permission handler — разрешим алиас
+        ses.setPermissionRequestHandler((wc, permission, cb, details) => {
+            const norm = normalizePermission(permission);
+            if (norm === 'screenShare') {
+                this.doPermissionRequest(wc.id, norm, details as any).then((ok) => cb(ok)).catch(() => cb(false));
+                return;
+            }
+            // Прочее отдаём на откуп существующей проводке (обычно MainWindow ставит свой handler)
+            cb(false);
+        });
+
+        // Если Electron поддерживает системный пикер (macOS 14+/Win11), его можно включить опционально:
+        // @ts-ignore — опция может отсутствовать в типах установленной версии
+        try { ses.setDisplayMediaRequestHandler?.(() => { }, { useSystemPicker: true }); } catch { }
+    };
+
+    // -------------------------------------------------------------------------
 
     handlePermissionRequest = async (
         webContents: WebContents,
@@ -116,9 +229,10 @@ export class PermissionsManager extends JsonFileManager<PermissionsByOrigin> {
 
     doPermissionRequest = async (
         webContentsId: number,
-        permission: string,
+        permissionRaw: string,
         details: PermissionRequestHandlerHandlerDetails,
     ) => {
+        const permission = normalizePermission(permissionRaw);
         log.debug('doPermissionRequest', permission, details);
 
         // is the requested permission type supported?
@@ -201,15 +315,15 @@ export class PermissionsManager extends JsonFileManager<PermissionsByOrigin> {
                 // Show the dialog to ask the user
                 dialog.showMessageBox(mainWindow, {
                     title: localizeMessage('main.permissionsManager.checkPermission.dialog.title', 'Permission Requested'),
-                    message: localizeMessage(`main.permissionsManager.checkPermission.dialog.message.${permission}`, '{appName} ({url}) is requesting the "{permission}" permission.', {appName: app.name, url: parsedURL.origin, permission, externalURL: details.externalURL}),
-                    detail: localizeMessage(`main.permissionsManager.checkPermission.dialog.detail.${permission}`, 'Would you like to grant {appName} this permission?', {appName: app.name}),
+                    message: localizeMessage(`main.permissionsManager.checkPermission.dialog.message.${permission}`, '{appName} ({url}) is requesting the "{permission}" permission.', { appName: app.name, url: parsedURL.origin, permission, externalURL: (details as any).externalURL }),
+                    detail: localizeMessage(`main.permissionsManager.checkPermission.dialog.detail.${permission}`, 'Would you like to grant {appName} this permission?', { appName: app.name }),
                     type: 'question',
                     buttons: [
                         localizeMessage('label.deny', 'Deny'),
                         localizeMessage('label.denyPermanently', 'Deny Permanently'),
                         localizeMessage('label.allow', 'Allow'),
                     ],
-                }).then(({response}) => {
+                }).then(({ response }) => {
                     // Save their response
                     const newPermission = {
                         allowed: response === 2,
@@ -225,6 +339,7 @@ export class PermissionsManager extends JsonFileManager<PermissionsByOrigin> {
 
                     if (response < 2) {
                         resolve(false);
+                        return;
                     }
 
                     resolve(true);

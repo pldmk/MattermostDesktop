@@ -178,7 +178,7 @@
     "registry-js": "1.16.1",
     "uuid": "9.0.1",
     "valid-url": "1.0.9",
-    "windows-focus-assist": "1.4.0",
+    "windows-focus-assist": "^1.4.0",
     "yargs": "17.7.2"
   }
 }

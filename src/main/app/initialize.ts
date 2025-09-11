@@ -2,11 +2,12 @@
 // See LICENSE.txt for license information.
 
 import path from 'path';
-import {pathToFileURL} from 'url';
+import { pathToFileURL } from 'url';
 
-import {app, ipcMain, nativeTheme, net, protocol, session} from 'electron';
-import installExtension, {REACT_DEVELOPER_TOOLS, REDUX_DEVTOOLS} from 'electron-devtools-installer';
+import { app, ipcMain, nativeTheme, net, protocol, session } from 'electron';
+import installExtension, { REACT_DEVELOPER_TOOLS, REDUX_DEVTOOLS } from 'electron-devtools-installer';
 import isDev from 'electron-is-dev';
+import { installScreenShareHandler } from '../screenShare';
 
 import {
     FOCUS_BROWSERVIEW,
@@ -32,24 +33,24 @@ import {
     DEVELOPER_MODE_UPDATED,
 } from 'common/communication';
 import Config from 'common/config';
-import {SECURE_STORAGE_KEYS} from 'common/constants/secureStorage';
-import {Logger} from 'common/log';
+import { SECURE_STORAGE_KEYS } from 'common/constants/secureStorage';
+import { Logger } from 'common/log';
 import ServerManager from 'common/servers/serverManager';
-import {parseURL} from 'common/utils/url';
+import { parseURL } from 'common/utils/url';
 import AllowProtocolDialog from 'main/allowProtocolDialog';
 import AppVersionManager from 'main/AppVersionManager';
 import AuthManager from 'main/authManager';
 import AutoLauncher from 'main/AutoLauncher';
 import updateManager from 'main/autoUpdater';
-import {setupBadge} from 'main/badge';
+import { setupBadge } from 'main/badge';
 import CertificateManager from 'main/certificateManager';
-import {configPath, updatePaths} from 'main/constants';
+import { configPath, updatePaths } from 'main/constants';
 import CriticalErrorHandler from 'main/CriticalErrorHandler';
 import DeveloperMode from 'main/developerMode';
 import downloadsManager from 'main/downloadsManager';
 import i18nManager from 'main/i18nManager';
 import NonceManager from 'main/nonceManager';
-import {getDoNotDisturb} from 'main/notifications';
+import { getDoNotDisturb } from 'main/notifications';
 import parseArgs from 'main/ParseArgs';
 import PerformanceMonitor from 'main/performanceMonitor';
 import PermissionsManager from 'main/permissionsManager';
@@ -103,7 +104,7 @@ import {
     handleGetDarkMode,
 } from './windows';
 
-import {protocols} from '../../../electron-builder.json';
+import { protocols } from '../../../electron-builder.json';
 
 export const mainProtocol = protocols?.[0]?.schemes?.[0];
 
@@ -255,7 +256,7 @@ function initializeBeforeAppReady() {
     }
 
     protocol.registerSchemesAsPrivileged([
-        {scheme: 'mattermost-desktop', privileges: {standard: true}},
+        { scheme: 'mattermost-desktop', privileges: { standard: true } },
     ]);
 }
 
@@ -293,7 +294,7 @@ async function initializeAfterAppReady() {
     protocol.handle('mattermost-desktop', (request: Request) => {
         const url = parseURL(request.url);
         if (!url) {
-            return new Response('bad', {status: 400});
+            return new Response('bad', { status: 400 });
         }
 
         // Including this snippet from the handler docs to check for path traversal
@@ -302,7 +303,7 @@ async function initializeAfterAppReady() {
         const relativePath = path.relative(app.getAppPath(), pathToServe);
         const isSafe = relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
         if (!isSafe) {
-            return new Response('bad', {status: 400});
+            return new Response('bad', { status: 400 });
         }
 
         return net.fetch(pathToFileURL(pathToServe).toString());
@@ -322,10 +323,10 @@ async function initializeAfterAppReady() {
                     const secret = await secureStorage.getSecret(server.url.toString(), SECURE_STORAGE_KEYS.PREAUTH);
                     if (secret) {
                         server.preAuthSecret = secret;
-                        log.debug('Loaded pre-auth secret for server:', {serverId: server.id});
+                        log.debug('Loaded pre-auth secret for server:', { serverId: server.id });
                     }
                 } catch (error) {
-                    log.warn('Failed to load pre-auth secret for server:', {serverId: server.id, error});
+                    log.warn('Failed to load pre-auth secret for server:', { serverId: server.id, error });
                 }
             }),
         );
@@ -370,7 +371,7 @@ async function initializeAfterAppReady() {
                         'X-Mattermost-Preauth-Secret': secret,
                     };
 
-                    callback({requestHeaders});
+                    callback({ requestHeaders });
                     return;
                 }
             }
@@ -379,7 +380,7 @@ async function initializeAfterAppReady() {
         }
 
         // If no secret found or error occurred, proceed with original headers
-        callback({requestHeaders: details.requestHeaders});
+        callback({ requestHeaders: details.requestHeaders });
     });
 
     if (process.platform !== 'darwin') {
@@ -493,6 +494,21 @@ async function initializeAfterAppReady() {
     // handle permission requests
     // - approve if a supported permission type and the request comes from the renderer or one of the defined servers
     defaultSession.setPermissionRequestHandler(PermissionsManager.handlePermissionRequest);
+
+    const prev = PermissionsManager.handlePermissionRequest;
+    defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+        if (permission === 'display-capture') {
+            // Разрешаем выдачу медиапотока экрана
+            callback(true);
+            return;
+        }
+        // Всё остальное — как было
+        prev(webContents, permission, callback, details);
+    });
+
+
+    // >>> ВКЛЮЧАЕМ собственный пикер для getDisplayMedia
+    installScreenShareHandler();
 
     if (wasUpdated(AppVersionManager.lastAppVersion)) {
         clearAppCache();
