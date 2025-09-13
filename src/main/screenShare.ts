@@ -94,7 +94,7 @@ function createPickerWindow(parent?: BrowserWindow): BrowserWindow {
       .tb-left *, .tb-right * { -webkit-app-region: no-drag; }
       .btn {
         width:36px; height:36px; border-radius:18px; display:flex; align-items:center; justify-content:center;
-        background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.10); cursor:pointer;
+        background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.10); cursor:pointer; color: #fff;
       }
       .btn:hover { background:rgba(255,255,255,.14); }
       .btn.primary { width:auto; padding:0 14px; border-radius:18px; color:white; background:var(--accent); border-color:rgba(0,0,0,.2); }
