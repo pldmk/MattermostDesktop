@@ -162,7 +162,6 @@ function createPickerWindow(parent?: BrowserWindow): BrowserWindow {
     </div>
 
     <div class="footer">
-      <button class="btn" id="btn-cancel">Cancel</button>
       <button class="btn primary" id="btn-share" disabled>Share</button>
     </div>
 
@@ -225,7 +224,6 @@ function createPickerWindow(parent?: BrowserWindow): BrowserWindow {
       });
 
       document.getElementById('btn-close').onclick = (e) => { e.preventDefault(); api.cancel(); };
-      document.getElementById('btn-cancel').onclick = (e) => { e.preventDefault(); api.cancel(); };
       document.getElementById('btn-share').onclick = (e) => { e.preventDefault(); if (selectedId) api.choose(selectedId); };
       document.getElementById('btn-max').onclick = (e) => { e.preventDefault(); api.toggleFullscreen(); };
 
