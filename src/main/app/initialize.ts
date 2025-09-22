@@ -106,7 +106,12 @@ import {
 import { protocols } from '../../../electron-builder.json';
 
 // ===== PTT (встроено здесь, без новых файлов)
-import { uIOhook, UiohookKey, UiohookKeyboardEvent } from 'uiohook-napi';
+import {
+    uIOhook,
+    UiohookKey,
+    UiohookKeyboardEvent,
+    UiohookMouseEvent,
+} from 'uiohook-napi';
 
 // IPC имена (дублируются также в preload)
 const PTT_GET_CONFIG = 'PTT_GET_CONFIG';
@@ -116,9 +121,24 @@ const PTT_EVENT_PRESSED = 'PTT_EVENT_PRESSED';
 const PTT_EVENT_RELEASED = 'PTT_EVENT_RELEASED';
 const PTT_EVENT_TOGGLE_MIC = 'PTT_EVENT_TOGGLE_MIC';
 
-type PTTHotkey = { keycode: number; ctrl: boolean; alt: boolean; shift: boolean; meta: boolean; label: string };
+type PTTInputType = 'key' | 'mouse';
+type PTTHotkey = {
+    type: PTTInputType;
+    // key
+    keycode?: number;
+    // mouse
+    mouseButton?: number; // 1=Left, 2=Right, 3=Middle, 4/5=Side buttons
+    // modifiers
+    ctrl: boolean;
+    alt: boolean;
+    shift: boolean;
+    meta: boolean;
+    // UI label
+    label: string;
+};
 type PTTConfig = { enabled: boolean; ptt?: PTTHotkey | null; toggleMic?: PTTHotkey | null };
 
+// Модификаторы — именно как в твоей версии (generic + right-variants)
 const isMod = (kc: number) =>
     kc === UiohookKey.Shift || kc === UiohookKey.ShiftRight ||
     kc === UiohookKey.Ctrl || kc === UiohookKey.CtrlRight ||
@@ -127,7 +147,8 @@ const isMod = (kc: number) =>
 
 function keyLabel(kc: number): string {
     if (kc >= UiohookKey.A && kc <= UiohookKey.Z) return String.fromCharCode(kc).toUpperCase();
-    if (kc >= UiohookKey[0] && kc <= UiohookKey[9]) return String.fromCharCode(kc);
+    // Не у всех платформ корректны коды 0..9, оставим generic
+    // Если захочешь — дополним мапой Key0..Key9
     const fn: number[] = [
         UiohookKey.F1, UiohookKey.F2, UiohookKey.F3, UiohookKey.F4, UiohookKey.F5, UiohookKey.F6,
         UiohookKey.F7, UiohookKey.F8, UiohookKey.F9, UiohookKey.F10, UiohookKey.F11, UiohookKey.F12,
@@ -139,23 +160,50 @@ function keyLabel(kc: number): string {
     return `KeyCode ${kc}`;
 }
 
+function mouseButtonLabel(btn?: number): string {
+    switch (btn) {
+        case 1: return 'Mouse1 (Left)';
+        case 2: return 'Mouse2 (Right)';
+        case 3: return 'Mouse3 (Middle)';
+        case 4: return 'Mouse4';
+        case 5: return 'Mouse5';
+        default: return typeof btn === 'number' ? `Mouse${btn}` : 'Mouse';
+    }
+}
+
 function formatHotkeyLabel(hk: Omit<PTTHotkey, 'label'>): string {
     const parts: string[] = [];
     if (hk.ctrl) parts.push('Ctrl');
     if (hk.alt) parts.push('Alt');
     if (hk.shift) parts.push('Shift');
     if (hk.meta) parts.push(process.platform === 'darwin' ? 'Cmd' : 'Meta');
-    parts.push(keyLabel(hk.keycode));
+    if (hk.type === 'mouse') {
+        parts.push(mouseButtonLabel(hk.mouseButton));
+    } else {
+        parts.push(keyLabel(hk.keycode!));
+    }
     return parts.join('+');
 }
-function matchesHotkey(e: UiohookKeyboardEvent, hk?: PTTHotkey | null): boolean {
-    if (!hk) return false;
+
+function matchesKeyboardHotkey(e: UiohookKeyboardEvent, hk?: PTTHotkey | null): boolean {
+    if (!hk || hk.type !== 'key') return false;
     return !!e.ctrlKey === !!hk.ctrl &&
         !!e.altKey === !!hk.alt &&
         !!e.shiftKey === !!hk.shift &&
         !!e.metaKey === !!hk.meta &&
         e.keycode === hk.keycode;
 }
+
+function matchesMouseHotkey(e: UiohookMouseEvent, hk?: PTTHotkey | null): boolean {
+    if (!hk || hk.type !== 'mouse') return false;
+    // В uiohook-napi в mouse-событиях также приходят флаги модификаторов
+    return !!(e as any).ctrlKey === !!hk.ctrl &&
+        !!(e as any).altKey === !!hk.alt &&
+        !!(e as any).shiftKey === !!hk.shift &&
+        !!(e as any).metaKey === !!hk.meta &&
+        e.button === hk.mouseButton;
+}
+
 const broadcastPTT = (channel: string, ...args: any[]) => {
     try { ViewManager.sendToAllViews(channel, ...args); } catch { /* noop */ }
     try {
@@ -167,65 +215,175 @@ const broadcastPTT = (channel: string, ...args: any[]) => {
 
 let pttConfig: PTTConfig = { enabled: false, ptt: null, toggleMic: null };
 let pttAttached = false;
+
+// Чтобы корректно закрывать PTT при отпускании именно той кнопки,
+// запоминаем какой «источник» активировал зажатие
 let pttActive = false;
+let pttActiveSource: null | { type: PTTInputType; code: number } = null;
+
 let toggleTs = 0;
+
 let capturing: null | ('ptt' | 'toggleMic') = null;
 let captureResolve: ((hk: PTTHotkey) => void) | null = null;
 let captureReject: ((err: any) => void) | null = null;
 
 const pttConfigPath = () => path.join(app.getPath('userData'), 'ptt.json');
+
 async function loadPTTConfig() {
     try {
         const raw = await fs.promises.readFile(pttConfigPath(), 'utf8');
         const data = JSON.parse(raw);
+
+        // Нормализация старого формата (без type)
+        const normalize = (v: any): PTTHotkey | null => {
+            if (!v) return null;
+            if (v.type === 'mouse') {
+                return {
+                    type: 'mouse',
+                    mouseButton: Number(v.mouseButton ?? v.button ?? v.keycode ?? 3),
+                    ctrl: !!v.ctrl, alt: !!v.alt, shift: !!v.shift, meta: !!v.meta,
+                    label: v.label || formatHotkeyLabel({
+                        type: 'mouse',
+                        mouseButton: Number(v.mouseButton ?? v.button ?? 3),
+                        ctrl: !!v.ctrl, alt: !!v.alt, shift: !!v.shift, meta: !!v.meta,
+                    }),
+                };
+            }
+            // по умолчанию — клавиатура
+            return {
+                type: 'key',
+                keycode: Number(v.keycode ?? v.code ?? 0),
+                ctrl: !!v.ctrl, alt: !!v.alt, shift: !!v.shift, meta: !!v.meta,
+                label: v.label || formatHotkeyLabel({
+                    type: 'key',
+                    keycode: Number(v.keycode ?? v.code ?? 0),
+                    ctrl: !!v.ctrl, alt: !!v.alt, shift: !!v.shift, meta: !!v.meta,
+                }),
+            };
+        };
+
         pttConfig = {
             enabled: !!data.enabled,
-            ptt: data.ptt ?? null,
-            toggleMic: data.toggleMic ?? null,
+            ptt: normalize(data.ptt),
+            toggleMic: normalize(data.toggleMic),
         };
-    } catch { pttConfig = { enabled: false, ptt: null, toggleMic: null }; }
+    } catch {
+        pttConfig = { enabled: false, ptt: null, toggleMic: null };
+    }
 }
 async function savePTTConfig() {
     try { await fs.promises.writeFile(pttConfigPath(), JSON.stringify(pttConfig, null, 2), 'utf8'); } catch { /* noop */ }
 }
-function finishCaptureFromEvent(e: UiohookKeyboardEvent) {
+
+function finishCaptureFromKeyEvent(e: UiohookKeyboardEvent) {
     if (!capturing) return;
-    const hkBase = { keycode: e.keycode, ctrl: !!e.ctrlKey, alt: !!e.altKey, shift: !!e.shiftKey, meta: !!e.metaKey };
+    const hkBase: Omit<PTTHotkey, 'label'> = {
+        type: 'key',
+        keycode: e.keycode,
+        ctrl: !!e.ctrlKey, alt: !!e.altKey, shift: !!e.shiftKey, meta: !!e.metaKey,
+    };
     const hk: PTTHotkey = { ...hkBase, label: formatHotkeyLabel(hkBase) };
     (pttConfig as any)[capturing] = hk;
     savePTTConfig().catch(() => { });
-    const res = captureResolve; captureResolve = null; captureReject = null; const which = capturing; capturing = null;
+    const res = captureResolve; captureResolve = null; captureReject = null; capturing = null;
     res?.(hk);
 }
+function finishCaptureFromMouseEvent(e: UiohookMouseEvent) {
+    if (!capturing) return;
+    const hkBase: Omit<PTTHotkey, 'label'> = {
+        type: 'mouse',
+        mouseButton: e.button,
+        ctrl: !!(e as any).ctrlKey, alt: !!(e as any).altKey, shift: !!(e as any).shiftKey, meta: !!(e as any).metaKey,
+    };
+    const hk: PTTHotkey = { ...hkBase, label: formatHotkeyLabel(hkBase) };
+    (pttConfig as any)[capturing] = hk;
+    savePTTConfig().catch(() => { });
+    const res = captureResolve; captureResolve = null; captureReject = null; capturing = null;
+    res?.(hk);
+}
+
 function attachPTTHook() {
     if (pttAttached) return;
     pttAttached = true;
 
+    // === KEYBOARD
     uIOhook.on('keydown', (e: UiohookKeyboardEvent) => {
         if (capturing) {
-            if (!isMod(e.keycode)) finishCaptureFromEvent(e);
+            if (!isMod(e.keycode)) finishCaptureFromKeyEvent(e);
             return;
         }
-        if (!isMod(e.keycode) && matchesHotkey(e, pttConfig.toggleMic)) {
+
+        // Toggle Mic — клавиатурой
+        if (!isMod(e.keycode) && matchesKeyboardHotkey(e, pttConfig.toggleMic)) {
             const now = Date.now();
             if (now - toggleTs > 250) { toggleTs = now; broadcastPTT(PTT_EVENT_TOGGLE_MIC); }
         }
-        if (pttConfig.enabled && matchesHotkey(e, pttConfig.ptt)) {
-            if (!pttActive) { pttActive = true; broadcastPTT(PTT_EVENT_PRESSED); }
+
+        // PTT — клавиатурой
+        if (pttConfig.enabled && matchesKeyboardHotkey(e, pttConfig.ptt)) {
+            if (!pttActive) {
+                pttActive = true;
+                pttActiveSource = { type: 'key', code: e.keycode };
+                broadcastPTT(PTT_EVENT_PRESSED);
+            }
         }
     });
+
     uIOhook.on('keyup', (e: UiohookKeyboardEvent) => {
         if (capturing) return;
-        if (pttConfig.enabled && pttActive && pttConfig.ptt) {
+
+        // PTT release — клавиатура
+        if (pttConfig.enabled && pttActive && pttConfig.ptt?.type === 'key') {
             const relPart =
                 e.keycode === pttConfig.ptt.keycode ||
-                (pttConfig.ptt.shift && (e.keycode === UiohookKey.LeftShift || e.keycode === UiohookKey.RightShift)) ||
-                (pttConfig.ptt.ctrl && (e.keycode === UiohookKey.LeftCtrl || e.keycode === UiohookKey.RightCtrl)) ||
-                (pttConfig.ptt.alt && (e.keycode === UiohookKey.LeftAlt || e.keycode === UiohookKey.RightAlt)) ||
-                (pttConfig.ptt.meta && (e.keycode === UiohookKey.LeftMeta || e.keycode === UiohookKey.RightMeta));
-            if (relPart) { pttActive = false; broadcastPTT(PTT_EVENT_RELEASED); }
+                (pttConfig.ptt.shift && (e.keycode === UiohookKey.Shift || e.keycode === UiohookKey.ShiftRight)) ||
+                (pttConfig.ptt.ctrl && (e.keycode === UiohookKey.Ctrl || e.keycode === UiohookKey.CtrlRight)) ||
+                (pttConfig.ptt.alt && (e.keycode === UiohookKey.Alt || e.keycode === UiohookKey.AltRight)) ||
+                (pttConfig.ptt.meta && (e.keycode === UiohookKey.Meta || e.keycode === UiohookKey.MetaRight));
+
+            if (relPart && pttActiveSource?.type === 'key') {
+                pttActive = false;
+                pttActiveSource = null;
+                broadcastPTT(PTT_EVENT_RELEASED);
+            }
         }
     });
+
+    // === MOUSE
+    uIOhook.on('mousedown', (e: UiohookMouseEvent) => {
+        if (capturing) {
+            finishCaptureFromMouseEvent(e);
+            return;
+        }
+
+        // Toggle Mic — мышью (щелчок по кнопке)
+        if (matchesMouseHotkey(e, pttConfig.toggleMic)) {
+            const now = Date.now();
+            if (now - toggleTs > 250) { toggleTs = now; broadcastPTT(PTT_EVENT_TOGGLE_MIC); }
+        }
+
+        // PTT — мышью (зажатие кнопки)
+        if (pttConfig.enabled && matchesMouseHotkey(e, pttConfig.ptt)) {
+            if (!pttActive) {
+                pttActive = true;
+                pttActiveSource = { type: 'mouse', code: e.button };
+                broadcastPTT(PTT_EVENT_PRESSED);
+            }
+        }
+    });
+
+    uIOhook.on('mouseup', (e: UiohookMouseEvent) => {
+        if (capturing) return;
+
+        if (pttConfig.enabled && pttActive && pttConfig.ptt?.type === 'mouse') {
+            if (e.button === pttConfig.ptt.mouseButton && pttActiveSource?.type === 'mouse') {
+                pttActive = false;
+                pttActiveSource = null;
+                broadcastPTT(PTT_EVENT_RELEASED);
+            }
+        }
+    });
+
     try { uIOhook.start(); } catch { /* already started */ }
 }
 function detachPTTHook() {
@@ -233,6 +391,8 @@ function detachPTTHook() {
     pttAttached = false;
     try { uIOhook.removeAllListeners('keydown'); } catch { }
     try { uIOhook.removeAllListeners('keyup'); } catch { }
+    try { uIOhook.removeAllListeners('mousedown'); } catch { }
+    try { uIOhook.removeAllListeners('mouseup'); } catch { }
     try { uIOhook.stop(); } catch { }
 }
 
