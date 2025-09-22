@@ -20,7 +20,6 @@ let pickerWin: BrowserWindow | null = null;
 let installed = false;
 let preloadPath: string;
 
-/** Простой preload-мост для sandbox/CI */
 const PRELOAD_CODE = `
 const {contextBridge, ipcRenderer} = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -297,7 +296,6 @@ async function showPicker(parent: BrowserWindow | null): Promise<string | null> 
       ipcMain.removeListener('mm-picker:toggle-fullscreen', onToggleFs);
       if (pickerWin) {
         pickerWin.removeListener('closed', onClosed);
-        // Закрываем аккуратно (вторичный 'closed' не запустит finish из-за флага)
         try { pickerWin.close(); } catch { }
         pickerWin = null;
       }
@@ -326,25 +324,22 @@ export function installScreenShareHandler() {
   const ses = session.defaultSession;
 
   ses.setDisplayMediaRequestHandler(async (_request: any, rawCallback) => {
-    // Предохранитель: гарантируем один вызов
     let responded = false;
     const callback = (streams: any) => {
       if (responded) return;
       responded = true;
-      try { rawCallback(streams); } catch { /* ignore */ }
+      try { rawCallback(streams); } catch { }
     };
 
     try {
       const parent = BrowserWindow.getFocusedWindow() ?? null;
       const chosenId = await showPicker(parent);
-      if (!chosenId) return callback({}); // отмена
+      if (!chosenId) return callback({});
 
       const all = await desktopCapturer.getSources({ types: ['screen', 'window'] });
       const match = all.find(s => s.id === chosenId);
       if (!match) return callback({});
 
-      // ВАЖНО: только видео, без аудио. Отдаём минимальный объект (id + name),
-      // как советует актуальная спецификация Electron 37+.
       callback({ video: { id: match.id, name: match.name } });
     } catch {
       callback({});

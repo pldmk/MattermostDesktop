@@ -1,6 +1,4 @@
-// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
-// See LICENSE.txt for license information.
-
+// Copyright ...
 import path from 'path';
 import { pathToFileURL } from 'url';
 
@@ -8,6 +6,7 @@ import { app, ipcMain, nativeTheme, net, protocol, session } from 'electron';
 import installExtension, { REACT_DEVELOPER_TOOLS, REDUX_DEVTOOLS } from 'electron-devtools-installer';
 import isDev from 'electron-is-dev';
 import { installScreenShareHandler } from '../screenShare';
+
 
 import {
     FOCUS_BROWSERVIEW,
@@ -129,7 +128,6 @@ export async function initialize() {
         Config.initRegistry(),
     ]);
 
-    // no need to continue initializing if app is quitting
     if (global.willAppQuit) {
         return;
     }
@@ -141,19 +139,14 @@ export async function initialize() {
         migrateMacAppStore();
     }
 
-    // initialization that should run once the app is ready
     initializeInterCommunicationEventListeners();
     await initializeAfterAppReady();
 }
 
-//
-// initialization sub functions
-//
-
 function initializeArgs() {
     global.args = parseArgs(process.argv.slice(1));
 
-    global.isDev = isDev && !global.args.disableDevMode; // this doesn't seem to be right and isn't used as the single source of truth
+    global.isDev = isDev && !global.args.disableDevMode;
 
     if (global.args.dataDir) {
         app.setPath('userData', path.resolve(global.args.dataDir));
@@ -171,7 +164,6 @@ async function initializeConfig() {
             });
             handleConfigUpdate(configData);
 
-            // can only call this before the app is ready
             // eslint-disable-next-line no-undef
             // eslint-disable-next-line @typescript-eslint/ban-ts-comment
             // @ts-ignore
@@ -205,10 +197,7 @@ function initializeAppEventListeners() {
     app.on('login', AuthManager.handleAppLogin);
     app.on('will-finish-launching', handleAppWillFinishLaunching);
 
-    // Somehow cookies are not immediately saved to disk.
-    // So manually flush cookie store to disk on closing the app.
-    // https://github.com/electron/electron/issues/8416
-    // TODO: We can remove this once every server supported will flush on login/logout
+    // Сохраняем куки при выходе
     app.on('before-quit', flushCookiesStore);
 }
 
@@ -222,7 +211,6 @@ function initializeBeforeAppReady() {
     }
     TrustedOriginsStore.load();
 
-    // prevent using a different working directory, which happens on windows running after installation.
     const expectedPath = path.dirname(process.execPath);
     if (process.cwd() !== expectedPath && !isDev) {
         log.warn(`Current working directory is ${process.cwd()}, changing into ${expectedPath}`);
@@ -231,7 +219,6 @@ function initializeBeforeAppReady() {
 
     Tray.refreshImages(Config.trayIconTheme);
 
-    // If there is already an instance, quit this one
     // eslint-disable-next-line no-undef
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
@@ -291,14 +278,13 @@ function initializeInterCommunicationEventListeners() {
 }
 
 async function initializeAfterAppReady() {
+
     protocol.handle('mattermost-desktop', (request: Request) => {
         const url = parseURL(request.url);
         if (!url) {
             return new Response('bad', { status: 400 });
         }
 
-        // Including this snippet from the handler docs to check for path traversal
-        // https://www.electronjs.org/docs/latest/api/protocol#protocolhandlescheme-handler
         const pathToServe = path.join(app.getAppPath(), 'renderer', url.pathname);
         const relativePath = path.relative(app.getAppPath(), pathToServe);
         const isSafe = relativePath && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
@@ -311,11 +297,8 @@ async function initializeAfterAppReady() {
 
     ServerManager.reloadFromConfig();
 
-    // Initialize secure storage after app is ready
     try {
         await secureStorage.init();
-
-        // Load pre-auth secrets from secure storage into memory
         const servers = ServerManager.getAllServers();
         await Promise.allSettled(
             servers.map(async (server) => {
@@ -340,7 +323,7 @@ async function initializeAfterAppReady() {
         }
     });
 
-    app.setAppUserModelId('Mattermost.Desktop'); // Use explicit AppUserModelID
+    app.setAppUserModelId('Mattermost.Desktop');
     const defaultSession = session.defaultSession;
     defaultSession.webRequest.onHeadersReceived((details, callback) => {
         const url = parseURL(details.url);
@@ -357,7 +340,6 @@ async function initializeAfterAppReady() {
         downloadsManager.webRequestOnHeadersReceivedHandler(details, callback);
     });
 
-    // Inject X-Mattermost-Preauth-Secret header for all server requests
     defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
         try {
             const view = ServerManager.lookupViewByURL(details.url);
@@ -379,7 +361,6 @@ async function initializeAfterAppReady() {
             log.debug('Error injecting preauth secret header:', error);
         }
 
-        // If no secret found or error occurred, proceed with original headers
         callback({ requestHeaders: details.requestHeaders });
     });
 
@@ -405,7 +386,6 @@ async function initializeAfterAppReady() {
     }
 
     if (typeof Config.canUpgrade === 'undefined') {
-        // windows might not be ready, so we have to wait until it is
         Config.once('update', () => {
             log.debug('checkForUpdates');
             if (Config.canUpgrade && Config.autoCheckForUpdates) {
@@ -446,7 +426,6 @@ async function initializeAfterAppReady() {
 
     let deeplinkingURL;
 
-    // Protocol handler for win32 and linux
     if (process.platform !== 'darwin') {
         const args = process.argv.slice(1);
         if (Array.isArray(args) && args.length > 0) {
@@ -457,14 +436,10 @@ async function initializeAfterAppReady() {
         }
     }
 
-    // Call this to initiate a permissions check for DND state
     getDoNotDisturb();
 
     DeveloperMode.switchOff('disableUserActivityMonitor', () => {
-        // listen for status updates and pass on to renderer
         UserActivityMonitor.on('status', onUserActivityStatus);
-
-        // start monitoring user activity (needs to be started after the app is ready)
         UserActivityMonitor.startMonitoring();
     }, () => {
         UserActivityMonitor.off('status', onUserActivityStatus);
@@ -478,8 +453,6 @@ async function initializeAfterAppReady() {
 
     defaultSession.on('will-download', downloadsManager.handleNewDownload);
 
-    // needs to be done after app ready
-    // must be done before update menu
     if (Config.appLanguage) {
         i18nManager.setLocale(Config.appLanguage);
     } else if (!i18nManager.setLocale(app.getLocale())) {
@@ -491,23 +464,17 @@ async function initializeAfterAppReady() {
 
     ipcMain.emit('update-dict');
 
-    // handle permission requests
-    // - approve if a supported permission type and the request comes from the renderer or one of the defined servers
     defaultSession.setPermissionRequestHandler(PermissionsManager.handlePermissionRequest);
 
     const prev = PermissionsManager.handlePermissionRequest;
     defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
         if (permission === 'display-capture') {
-            // Разрешаем выдачу медиапотока экрана
             callback(true);
             return;
         }
-        // Всё остальное — как было
         prev(webContents, permission, callback, details);
     });
 
-
-    // >>> ВКЛЮЧАЕМ собственный пикер для getDisplayMedia
     installScreenShareHandler();
 
     if (wasUpdated(AppVersionManager.lastAppVersion)) {
@@ -517,8 +484,6 @@ async function initializeAfterAppReady() {
 
     handleMainWindowIsShown();
 
-    // The metrics won't start collecting for another minute
-    // so we can assume if we start now everything should be loaded by the time we're done
     PerformanceMonitor.init();
 }
 
@@ -527,6 +492,7 @@ function onUserActivityStatus(status: {
     idleTime: number;
     isSystemEvent: boolean;
 }) {
+    const log = new Logger('UserActivity');
     log.debug('UserActivityMonitor.on(status)', status);
     ViewManager.sendToAllViews(USER_ACTIVITY_UPDATE, status.userIsActive, status.idleTime, status.isSystemEvent);
 }
