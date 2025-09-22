@@ -1,12 +1,12 @@
 // Copyright ...
+import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 
-import { app, ipcMain, nativeTheme, net, protocol, session } from 'electron';
+import { app, ipcMain, nativeTheme, net, protocol, session, BrowserWindow } from 'electron';
 import installExtension, { REACT_DEVELOPER_TOOLS, REDUX_DEVTOOLS } from 'electron-devtools-installer';
 import isDev from 'electron-is-dev';
 import { installScreenShareHandler } from '../screenShare';
-
 
 import {
     FOCUS_BROWSERVIEW,
@@ -105,6 +105,139 @@ import {
 
 import { protocols } from '../../../electron-builder.json';
 
+// ===== PTT (встроено здесь, без новых файлов)
+import { uIOhook, UiohookKey, UiohookKeyboardEvent } from 'uiohook-napi';
+
+// IPC имена (дублируются также в preload)
+const PTT_GET_CONFIG = 'PTT_GET_CONFIG';
+const PTT_SET_ENABLED = 'PTT_SET_ENABLED';
+const PTT_START_CAPTURE = 'PTT_START_CAPTURE';
+const PTT_EVENT_PRESSED = 'PTT_EVENT_PRESSED';
+const PTT_EVENT_RELEASED = 'PTT_EVENT_RELEASED';
+const PTT_EVENT_TOGGLE_MIC = 'PTT_EVENT_TOGGLE_MIC';
+
+type PTTHotkey = { keycode: number; ctrl: boolean; alt: boolean; shift: boolean; meta: boolean; label: string };
+type PTTConfig = { enabled: boolean; ptt?: PTTHotkey | null; toggleMic?: PTTHotkey | null };
+
+const isMod = (kc: number) =>
+    kc === UiohookKey.Shift || kc === UiohookKey.ShiftRight ||
+    kc === UiohookKey.Ctrl || kc === UiohookKey.CtrlRight ||
+    kc === UiohookKey.Alt || kc === UiohookKey.AltRight ||
+    kc === UiohookKey.Meta || kc === UiohookKey.MetaRight;
+
+function keyLabel(kc: number): string {
+    if (kc >= UiohookKey.A && kc <= UiohookKey.Z) return String.fromCharCode(kc).toUpperCase();
+    if (kc >= UiohookKey[0] && kc <= UiohookKey[9]) return String.fromCharCode(kc);
+    const fn: number[] = [
+        UiohookKey.F1, UiohookKey.F2, UiohookKey.F3, UiohookKey.F4, UiohookKey.F5, UiohookKey.F6,
+        UiohookKey.F7, UiohookKey.F8, UiohookKey.F9, UiohookKey.F10, UiohookKey.F11, UiohookKey.F12,
+        UiohookKey.F13, UiohookKey.F14, UiohookKey.F15, UiohookKey.F16, UiohookKey.F17, UiohookKey.F18,
+        UiohookKey.F19, UiohookKey.F20, UiohookKey.F21, UiohookKey.F22, UiohookKey.F23, UiohookKey.F24,
+    ];
+    const idx = fn.indexOf(kc as typeof fn[number]);
+    if (idx >= 0) return `F${idx + 1}`;
+    return `KeyCode ${kc}`;
+}
+
+function formatHotkeyLabel(hk: Omit<PTTHotkey, 'label'>): string {
+    const parts: string[] = [];
+    if (hk.ctrl) parts.push('Ctrl');
+    if (hk.alt) parts.push('Alt');
+    if (hk.shift) parts.push('Shift');
+    if (hk.meta) parts.push(process.platform === 'darwin' ? 'Cmd' : 'Meta');
+    parts.push(keyLabel(hk.keycode));
+    return parts.join('+');
+}
+function matchesHotkey(e: UiohookKeyboardEvent, hk?: PTTHotkey | null): boolean {
+    if (!hk) return false;
+    return !!e.ctrlKey === !!hk.ctrl &&
+        !!e.altKey === !!hk.alt &&
+        !!e.shiftKey === !!hk.shift &&
+        !!e.metaKey === !!hk.meta &&
+        e.keycode === hk.keycode;
+}
+const broadcastPTT = (channel: string, ...args: any[]) => {
+    try { ViewManager.sendToAllViews(channel, ...args); } catch { /* noop */ }
+    try {
+        BrowserWindow.getAllWindows().forEach((bw) => {
+            try { bw.webContents.send(channel, ...args); } catch { /* noop */ }
+        });
+    } catch { /* noop */ }
+};
+
+let pttConfig: PTTConfig = { enabled: false, ptt: null, toggleMic: null };
+let pttAttached = false;
+let pttActive = false;
+let toggleTs = 0;
+let capturing: null | ('ptt' | 'toggleMic') = null;
+let captureResolve: ((hk: PTTHotkey) => void) | null = null;
+let captureReject: ((err: any) => void) | null = null;
+
+const pttConfigPath = () => path.join(app.getPath('userData'), 'ptt.json');
+async function loadPTTConfig() {
+    try {
+        const raw = await fs.promises.readFile(pttConfigPath(), 'utf8');
+        const data = JSON.parse(raw);
+        pttConfig = {
+            enabled: !!data.enabled,
+            ptt: data.ptt ?? null,
+            toggleMic: data.toggleMic ?? null,
+        };
+    } catch { pttConfig = { enabled: false, ptt: null, toggleMic: null }; }
+}
+async function savePTTConfig() {
+    try { await fs.promises.writeFile(pttConfigPath(), JSON.stringify(pttConfig, null, 2), 'utf8'); } catch { /* noop */ }
+}
+function finishCaptureFromEvent(e: UiohookKeyboardEvent) {
+    if (!capturing) return;
+    const hkBase = { keycode: e.keycode, ctrl: !!e.ctrlKey, alt: !!e.altKey, shift: !!e.shiftKey, meta: !!e.metaKey };
+    const hk: PTTHotkey = { ...hkBase, label: formatHotkeyLabel(hkBase) };
+    (pttConfig as any)[capturing] = hk;
+    savePTTConfig().catch(() => { });
+    const res = captureResolve; captureResolve = null; captureReject = null; const which = capturing; capturing = null;
+    res?.(hk);
+}
+function attachPTTHook() {
+    if (pttAttached) return;
+    pttAttached = true;
+
+    uIOhook.on('keydown', (e: UiohookKeyboardEvent) => {
+        if (capturing) {
+            if (!isMod(e.keycode)) finishCaptureFromEvent(e);
+            return;
+        }
+        if (!isMod(e.keycode) && matchesHotkey(e, pttConfig.toggleMic)) {
+            const now = Date.now();
+            if (now - toggleTs > 250) { toggleTs = now; broadcastPTT(PTT_EVENT_TOGGLE_MIC); }
+        }
+        if (pttConfig.enabled && matchesHotkey(e, pttConfig.ptt)) {
+            if (!pttActive) { pttActive = true; broadcastPTT(PTT_EVENT_PRESSED); }
+        }
+    });
+    uIOhook.on('keyup', (e: UiohookKeyboardEvent) => {
+        if (capturing) return;
+        if (pttConfig.enabled && pttActive && pttConfig.ptt) {
+            const relPart =
+                e.keycode === pttConfig.ptt.keycode ||
+                (pttConfig.ptt.shift && (e.keycode === UiohookKey.LeftShift || e.keycode === UiohookKey.RightShift)) ||
+                (pttConfig.ptt.ctrl && (e.keycode === UiohookKey.LeftCtrl || e.keycode === UiohookKey.RightCtrl)) ||
+                (pttConfig.ptt.alt && (e.keycode === UiohookKey.LeftAlt || e.keycode === UiohookKey.RightAlt)) ||
+                (pttConfig.ptt.meta && (e.keycode === UiohookKey.LeftMeta || e.keycode === UiohookKey.RightMeta));
+            if (relPart) { pttActive = false; broadcastPTT(PTT_EVENT_RELEASED); }
+        }
+    });
+    try { uIOhook.start(); } catch { /* already started */ }
+}
+function detachPTTHook() {
+    if (!pttAttached) return;
+    pttAttached = false;
+    try { uIOhook.removeAllListeners('keydown'); } catch { }
+    try { uIOhook.removeAllListeners('keyup'); } catch { }
+    try { uIOhook.stop(); } catch { }
+}
+
+// ===== конец блока PTT
+
 export const mainProtocol = protocols?.[0]?.schemes?.[0];
 
 const log = new Logger('App.Initialize');
@@ -199,6 +332,9 @@ function initializeAppEventListeners() {
 
     // Сохраняем куки при выходе
     app.on('before-quit', flushCookiesStore);
+
+    // PTT: аккуратно снять hook
+    app.on('before-quit', () => { try { detachPTTHook(); } catch { /* noop */ } });
 }
 
 function initializeBeforeAppReady() {
@@ -275,6 +411,30 @@ function initializeInterCommunicationEventListeners() {
     if (process.env.NODE_ENV === 'test') {
         ipcMain.on(SHOW_SETTINGS_WINDOW, handleShowSettingsModal);
     }
+
+    // === PTT: конфиг + IPC
+    (async () => {
+        try { await loadPTTConfig(); } catch { /* noop */ }
+        ipcMain.handle(PTT_GET_CONFIG, async () => pttConfig);
+        ipcMain.handle(PTT_SET_ENABLED, async (_evt, on: boolean) => {
+            pttConfig.enabled = !!on; await savePTTConfig(); return pttConfig;
+        });
+        ipcMain.handle(PTT_START_CAPTURE, async (_evt, which: 'ptt' | 'toggleMic') => {
+            if (which !== 'ptt' && which !== 'toggleMic') throw new Error('bad capture target');
+            if (capturing) throw new Error('capture in progress');
+            capturing = which;
+            return new Promise<PTTHotkey>((resolve, reject) => {
+                captureResolve = resolve; captureReject = reject;
+                setTimeout(() => {
+                    if (capturing) {
+                        capturing = null;
+                        const rej = captureReject; captureResolve = null; captureReject = null;
+                        rej?.(new Error('Capture timeout'));
+                    }
+                }, 20000);
+            });
+        });
+    })();
 }
 
 async function initializeAfterAppReady() {
@@ -485,6 +645,9 @@ async function initializeAfterAppReady() {
     handleMainWindowIsShown();
 
     PerformanceMonitor.init();
+
+    // === PTT: активируем глобальный hook
+    try { attachPTTHook(); } catch { /* noop */ }
 }
 
 function onUserActivityStatus(status: {

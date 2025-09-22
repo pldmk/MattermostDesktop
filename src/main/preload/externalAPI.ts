@@ -1,10 +1,10 @@
-// Copyright (c) 2016-present Mattermost, Inc. All Rights Reserved.
+// Copyright ...
 // See LICENSE.txt for license information.
 
-import type {IpcRendererEvent} from 'electron';
-import {contextBridge, ipcRenderer, webFrame} from 'electron';
+import type { IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webFrame } from 'electron';
 
-import type {DesktopAPI} from '@mattermost/desktop-api';
+import type { DesktopAPI } from '@mattermost/desktop-api';
 
 import {
     NOTIFY_MENTION,
@@ -40,7 +40,15 @@ import {
     METRICS_RECEIVE,
 } from 'common/communication';
 
-import type {ExternalAPI} from 'types/externalAPI';
+import type { ExternalAPI } from 'types/externalAPI';
+
+// ===== PTT каналы (строки продублированы, без новых файлов)
+const PTT_GET_CONFIG = 'PTT_GET_CONFIG';
+const PTT_SET_ENABLED = 'PTT_SET_ENABLED';
+const PTT_START_CAPTURE = 'PTT_START_CAPTURE';
+const PTT_EVENT_PRESSED = 'PTT_EVENT_PRESSED';
+const PTT_EVENT_RELEASED = 'PTT_EVENT_RELEASED';
+const PTT_EVENT_TOGGLE_MIC = 'PTT_EVENT_TOGGLE_MIC';
 
 const createListener: ExternalAPI['createListener'] = (channel: string, listener: (...args: never[]) => void) => {
     const listenerWithEvent = (_: IpcRendererEvent, ...args: unknown[]) =>
@@ -51,7 +59,7 @@ const createListener: ExternalAPI['createListener'] = (channel: string, listener
     };
 };
 
-const desktopAPI: DesktopAPI = {
+const desktopAPI: DesktopAPI & any = {
 
     // Initialization
     isDev: () => ipcRenderer.invoke(GET_IS_DEV_MODE),
@@ -59,67 +67,76 @@ const desktopAPI: DesktopAPI = {
     reactAppInitialized: () => ipcRenderer.send(REACT_APP_INITIALIZED),
 
     // Session
-    setSessionExpired: (isExpired) => ipcRenderer.send(SESSION_EXPIRED, isExpired),
-    onUserActivityUpdate: (listener) => createListener(USER_ACTIVITY_UPDATE, listener),
+    setSessionExpired: (isExpired: boolean) => ipcRenderer.send(SESSION_EXPIRED, isExpired),
+    onUserActivityUpdate: (listener: ExternalAPI['createListener']) => createListener(USER_ACTIVITY_UPDATE, listener as any),
 
     onLogin: () => ipcRenderer.send(TAB_LOGIN_CHANGED, true),
     onLogout: () => ipcRenderer.send(TAB_LOGIN_CHANGED, false),
 
     // Unreads/mentions/notifications
-    sendNotification: (title, body, channelId, teamId, url, silent, soundName) =>
+    sendNotification: (title: string, body: string, channelId: string, teamId: string, url: string, silent?: boolean, soundName?: string) =>
         ipcRenderer.invoke(NOTIFY_MENTION, title, body, channelId, teamId, url, silent, soundName),
-    onNotificationClicked: (listener) => createListener(NOTIFICATION_CLICKED, listener),
-    setUnreadsAndMentions: (isUnread, mentionCount) => ipcRenderer.send(UNREADS_AND_MENTIONS, isUnread, mentionCount),
+    onNotificationClicked: (listener: (channelId: string, teamId: string, url: string) => void) => createListener(NOTIFICATION_CLICKED, listener as any),
+    setUnreadsAndMentions: (isUnread: boolean, mentionCount: number) => ipcRenderer.send(UNREADS_AND_MENTIONS, isUnread, mentionCount),
 
     // Navigation
     requestBrowserHistoryStatus: () => ipcRenderer.invoke(REQUEST_BROWSER_HISTORY_STATUS),
-    onBrowserHistoryStatusUpdated: (listener) => createListener(BROWSER_HISTORY_STATUS_UPDATED, listener),
-    onBrowserHistoryPush: (listener) => createListener(BROWSER_HISTORY_PUSH, listener),
-    sendBrowserHistoryPush: (path) => ipcRenderer.send(BROWSER_HISTORY_PUSH, path),
+    onBrowserHistoryStatusUpdated: (listener: (canGoBack: boolean, canGoForward: boolean) => void) => createListener(BROWSER_HISTORY_STATUS_UPDATED, listener as any),
+    onBrowserHistoryPush: (listener: (path: string) => void) => createListener(BROWSER_HISTORY_PUSH, listener as any),
+    sendBrowserHistoryPush: (path: string) => ipcRenderer.send(BROWSER_HISTORY_PUSH, path),
 
     // Calls
-    joinCall: (opts) => ipcRenderer.invoke(CALLS_JOIN_CALL, opts),
+    joinCall: (opts: any) => ipcRenderer.invoke(CALLS_JOIN_CALL, opts),
     leaveCall: () => ipcRenderer.send(CALLS_LEAVE_CALL),
 
-    callsWidgetConnected: (callID, sessionID) => ipcRenderer.send(CALLS_JOINED_CALL, callID, sessionID),
-    resizeCallsWidget: (width, height) => ipcRenderer.send(CALLS_WIDGET_RESIZE, width, height),
+    callsWidgetConnected: (callID: string, sessionID: string) => ipcRenderer.send(CALLS_JOINED_CALL, callID, sessionID),
+    resizeCallsWidget: (width: number, height: number) => ipcRenderer.send(CALLS_WIDGET_RESIZE, width, height),
 
-    sendCallsError: (err, callID, errMsg) => ipcRenderer.send(CALLS_ERROR, err, callID, errMsg),
-    onCallsError: (listener) => createListener(CALLS_ERROR, listener),
+    sendCallsError: (err: string, callID?: string, errMsg?: string) => ipcRenderer.send(CALLS_ERROR, err, callID, errMsg),
+    onCallsError: (listener: (err: string, callID?: string, errMsg?: string) => void) => createListener(CALLS_ERROR, listener as any),
 
-    getDesktopSources: (opts) => ipcRenderer.invoke(GET_DESKTOP_SOURCES, opts),
+    getDesktopSources: (opts: any) => ipcRenderer.invoke(GET_DESKTOP_SOURCES, opts),
     openScreenShareModal: () => ipcRenderer.send(DESKTOP_SOURCES_MODAL_REQUEST),
-    onOpenScreenShareModal: (listener) => createListener(DESKTOP_SOURCES_MODAL_REQUEST, listener),
+    onOpenScreenShareModal: (listener: () => void) => createListener(DESKTOP_SOURCES_MODAL_REQUEST, listener as any),
 
-    shareScreen: (sourceID, withAudio) => ipcRenderer.send(CALLS_WIDGET_SHARE_SCREEN, sourceID, withAudio),
-    onScreenShared: (listener) => createListener(CALLS_WIDGET_SHARE_SCREEN, listener),
+    shareScreen: (sourceID: string, withAudio: boolean) => ipcRenderer.send(CALLS_WIDGET_SHARE_SCREEN, sourceID, withAudio),
+    onScreenShared: (listener: (sourceID: string, withAudio: boolean) => void) => createListener(CALLS_WIDGET_SHARE_SCREEN, listener as any),
 
-    sendJoinCallRequest: (callId) => ipcRenderer.send(CALLS_JOIN_REQUEST, callId),
-    onJoinCallRequest: (listener) => createListener(CALLS_JOIN_REQUEST, listener),
+    sendJoinCallRequest: (callId: string) => ipcRenderer.send(CALLS_JOIN_REQUEST, callId),
+    onJoinCallRequest: (listener: (callId: string) => void) => createListener(CALLS_JOIN_REQUEST, listener as any),
 
-    openLinkFromCalls: (url) => ipcRenderer.send(CALLS_LINK_CLICK, url),
+    openLinkFromCalls: (url: string) => ipcRenderer.send(CALLS_LINK_CLICK, url),
 
     focusPopout: () => ipcRenderer.send(CALLS_POPOUT_FOCUS),
 
-    openThreadForCalls: (threadID) => ipcRenderer.send(CALLS_WIDGET_OPEN_THREAD, threadID),
-    onOpenThreadForCalls: (listener) => createListener(CALLS_WIDGET_OPEN_THREAD, listener),
+    openThreadForCalls: (threadID: string) => ipcRenderer.send(CALLS_WIDGET_OPEN_THREAD, threadID),
+    onOpenThreadForCalls: (listener: (threadID: string) => void) => createListener(CALLS_WIDGET_OPEN_THREAD, listener as any),
 
-    openStopRecordingModal: (channelID) => ipcRenderer.send(CALLS_WIDGET_OPEN_STOP_RECORDING_MODAL, channelID),
-    onOpenStopRecordingModal: (listener) => createListener(CALLS_WIDGET_OPEN_STOP_RECORDING_MODAL, listener),
+    openStopRecordingModal: (channelID: string) => ipcRenderer.send(CALLS_WIDGET_OPEN_STOP_RECORDING_MODAL, channelID),
+    onOpenStopRecordingModal: (listener: (channelID: string) => void) => createListener(CALLS_WIDGET_OPEN_STOP_RECORDING_MODAL, listener as any),
 
     openCallsUserSettings: () => ipcRenderer.send(CALLS_WIDGET_OPEN_USER_SETTINGS),
-    onOpenCallsUserSettings: (listener) => createListener(CALLS_WIDGET_OPEN_USER_SETTINGS, listener),
+    onOpenCallsUserSettings: (listener: () => void) => createListener(CALLS_WIDGET_OPEN_USER_SETTINGS, listener as any),
 
-    onSendMetrics: (listener) => createListener(METRICS_SEND, listener),
+    onSendMetrics: (listener: (metricsMap: Map<string, { cpu?: number; memory?: number }>) => void) => createListener(METRICS_SEND, listener as any),
 
     // Utility
-    unregister: (channel) => ipcRenderer.removeAllListeners(channel),
+    unregister: (channel: string) => ipcRenderer.removeAllListeners(channel),
+
+    // === PTT API ===
+    getPTTConfig: () => ipcRenderer.invoke(PTT_GET_CONFIG),
+    setPTTEnabled: (on: boolean) => ipcRenderer.invoke(PTT_SET_ENABLED, on),
+    startPTTKeyCapture: (which: 'ptt' | 'toggleMic') => ipcRenderer.invoke(PTT_START_CAPTURE, which),
+
+    onPTTPressed: (listener: () => void) => createListener(PTT_EVENT_PRESSED, listener),
+    onPTTReleased: (listener: () => void) => createListener(PTT_EVENT_RELEASED, listener),
+    onPTTToggleMic: (listener: () => void) => createListener(PTT_EVENT_TOGGLE_MIC, listener),
 };
 contextBridge.exposeInMainWorld('desktopAPI', desktopAPI);
 
 ipcRenderer.on(METRICS_REQUEST, async (_, name, serverId) => {
     const memory = await process.getProcessMemoryInfo();
-    ipcRenderer.send(METRICS_RECEIVE, name, {serverId, cpu: process.getCPUUsage().percentCPUUsage, memory: memory.residentSet ?? memory.private});
+    ipcRenderer.send(METRICS_RECEIVE, name, { serverId, cpu: process.getCPUUsage().percentCPUUsage, memory: memory.residentSet ?? memory.private });
 });
 
 // Call this once to unset it to 0
@@ -141,7 +158,7 @@ if (process.env.NODE_ENV === 'test') {
 
 // Enable secure input on macOS clients when the user is on a password input
 let isPasswordBox = false;
-const shouldSecureInput = (element: {tagName?: string; type?: string} | null, force = false) => {
+const shouldSecureInput = (element: { tagName?: string; type?: string } | null, force = false) => {
     const targetIsPasswordBox = (element && element.tagName === 'INPUT' && element.type === 'password');
     if (targetIsPasswordBox && (!isPasswordBox || force)) {
         ipcRenderer.send(TOGGLE_SECURE_INPUT, true);

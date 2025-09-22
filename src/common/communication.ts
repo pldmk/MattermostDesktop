@@ -199,3 +199,9 @@ export const REMOVE_SERVER = 'remove-server';
 
 // Secure storage
 export const SECURE_STORAGE_GET = 'secure-storage-get';
+
+export const PTT_SET_CONFIG = 'PTT_SET_CONFIG';
+export const PTT_GET_CONFIG = 'PTT_GET_CONFIG';
+export const PTT_EVENT_DOWN = 'PTT_EVENT_DOWN';
+export const PTT_EVENT_UP = 'PTT_EVENT_UP';
+export const PTT_EVENT_TOGGLE = 'PTT_EVENT_TOGGLE';
