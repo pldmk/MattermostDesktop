@@ -1,8 +1,8 @@
 {
   "publish": [
     {
-    "provider": "generic",
-    "url": "https://releases.mattermost.com/desktop"
+      "provider": "generic",
+      "url": "https://mm.cyberdst.ru/desktop"
     }
   ],
   "appId": "Mattermost.Desktop",
@@ -30,6 +30,13 @@
     "node_modules/macos-notification-state/build/**/*.node",
     "node_modules/windows-focus-assist/build/Release/**/*.node",
     "node_modules/registry-js/build/Release/**/*.node",
+    "node_modules/uiohook-napi/**/*",
+    "!**/node_modules/uiohook-napi/bin/**/*",
+    "!**/node_modules/uiohook-napi/build/**/*",
+    "node_modules/uiohook-napi/build/Release/*.node",
+    "node_modules/uiohook-napi/prebuilds/**/*.node",
+    "node_modules/node-gyp-build/**/*",
+    "node_modules/uiohook-napi/node_modules/node-gyp-build/**/*",
     {
       "from": "dist",
       "to": ".",
@@ -60,7 +67,8 @@
   "asarUnpack": [
     "./node_modules/macos-notification-state/build/Release/**/*.node",
     "./node_modules/windows-focus-assist/build/Release/**/*.node",
-    "./node_modules/registry-js/build/Release/**/*.node"
+    "./node_modules/registry-js/build/Release/**/*.node",
+    "**/node_modules/uiohook-napi/**"
   ],
   "linux": {
     "category": "Network;InstantMessaging",
@@ -88,7 +96,9 @@
     ]
   },
   "appImage": {
-    "executableArgs": [" "]
+    "executableArgs": [
+      " "
+    ]
   },
   "mac": {
     "category": "public.app-category.productivity",
@@ -124,7 +134,9 @@
     "provisioningProfile": "./mas.provisionprofile",
     "extendInfo": {
       "ITSAppUsesNonExemptEncryption": false,
-      "NSUserActivityTypes": ["INSendMessageIntent"]
+      "NSUserActivityTypes": [
+        "INSendMessageIntent"
+      ]
     },
     "singleArchFiles": "*"
   },
@@ -148,7 +160,7 @@
     "iconSize": 120,
     "iconTextSize": 14,
     "window": {
-        "height": 380
+      "height": 380
     }
   },
   "squirrelWindows": {
@@ -183,10 +195,17 @@
     "include": "scripts/installer.nsh"
   },
   "msi": {
-    "additionalWixArgs": ["-ext", "WixUtilExtension"],
+    "additionalWixArgs": [
+      "-ext",
+      "WixUtilExtension"
+    ],
     "upgradeCode": "{8523DAF0-699D-4CC7-9A65-C5E696A9DE6D}"
   },
   "rpm": {
-    "fpm": ["--rpm-rpmbuild-define", "_build_id_links none", "--rpm-digest=sha256"]
+    "fpm": [
+      "--rpm-rpmbuild-define",
+      "_build_id_links none",
+      "--rpm-digest=sha256"
+    ]
   }
 }

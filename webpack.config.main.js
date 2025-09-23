@@ -3,7 +3,7 @@
 // Copyright (c) 2015-2016 Yuya Ochiai
 
 const CopyPlugin = require('copy-webpack-plugin');
-const {merge} = require('webpack-merge');
+const { merge } = require('webpack-merge');
 
 const base = require('./webpack.config.base');
 
@@ -15,6 +15,7 @@ module.exports = merge(base, {
         'macos-notification-state': 'require("macos-notification-state")',
         'windows-focus-assist': 'require("windows-focus-assist")',
         'registry-js': 'require("registry-js")',
+        'uiohook-napi': 'require("uiohook-napi")',
     },
     externalsPresets: {
         electronMain: true,

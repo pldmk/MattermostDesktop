@@ -1,7 +1,7 @@
 {
   "name": "mattermost-desktop",
   "productName": "Mattermost",
-  "version": "6.0.0-develop.1",
+  "version": "6.0.0",
   "description": "Mattermost",
   "main": "dist/index.js",
   "author": "Mattermost, Inc. <feedback@mattermost.com>",
@@ -132,6 +132,7 @@
     "css-loader": "6.7.1",
     "electron": "37.4.0",
     "electron-builder": "24.13.3",
+    "electron-rebuild": "^3.2.9",
     "eslint": "8.57.0",
     "eslint-import-resolver-webpack": "0.13.8",
     "eslint-plugin-formatjs": "4.12.2",
@@ -169,6 +170,7 @@
     "electron-updater": "6.3.0",
     "joi": "17.12.2",
     "macos-notification-state": "3.0.0",
+    "node-gyp-build": "4.8.4",
     "pretty-bytes": "6.1.1",
     "react": "17.0.2",
     "react-beautiful-dnd": "13.1.1",
@@ -176,10 +178,10 @@
     "react-intl": "6.6.2",
     "react-select": "5.8.0",
     "registry-js": "1.16.1",
+    "uiohook-napi": "1.5.4",
     "uuid": "9.0.1",
     "valid-url": "1.0.9",
     "windows-focus-assist": "^1.4.0",
-    "yargs": "17.7.2",
-    "uiohook-napi": "latest"
+    "yargs": "17.7.2"
   }
 }
