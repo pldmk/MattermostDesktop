@@ -145,19 +145,78 @@ const isMod = (kc: number) =>
     kc === UiohookKey.Alt || kc === UiohookKey.AltRight ||
     kc === UiohookKey.Meta || kc === UiohookKey.MetaRight;
 
-function keyLabel(kc: number): string {
-    if (kc >= UiohookKey.A && kc <= UiohookKey.Z) return String.fromCharCode(kc).toUpperCase();
-    // Не у всех платформ корректны коды 0..9, оставим generic
-    // Если захочешь — дополним мапой Key0..Key9
-    const fn: number[] = [
-        UiohookKey.F1, UiohookKey.F2, UiohookKey.F3, UiohookKey.F4, UiohookKey.F5, UiohookKey.F6,
-        UiohookKey.F7, UiohookKey.F8, UiohookKey.F9, UiohookKey.F10, UiohookKey.F11, UiohookKey.F12,
-        UiohookKey.F13, UiohookKey.F14, UiohookKey.F15, UiohookKey.F16, UiohookKey.F17, UiohookKey.F18,
-        UiohookKey.F19, UiohookKey.F20, UiohookKey.F21, UiohookKey.F22, UiohookKey.F23, UiohookKey.F24,
+// ==== Надёжная обратная мапа HID-кодов в читаемые названия
+const KEY_NAME_MAP: Record<number, string> = buildKeyNameMap();
+
+function buildKeyNameMap(): Record<number, string> {
+    const map: Record<number, string> = {};
+    const K: any = UiohookKey as any;
+
+    // Буквы A..Z
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach((ch) => {
+        const val = K[ch];
+        if (typeof val === 'number') map[val] = ch;
+    });
+
+    // Цифры верхнего ряда 1..9, 0 — у разных версий бывают _1.._0 или DIGIT1..DIGIT0
+    const digitAliases = [
+        ['_1', '1'], ['_2', '2'], ['_3', '3'], ['_4', '4'], ['_5', '5'],
+        ['_6', '6'], ['_7', '7'], ['_8', '8'], ['_9', '9'], ['_0', '0'],
+        ['DIGIT1', '1'], ['DIGIT2', '2'], ['DIGIT3', '3'], ['DIGIT4', '4'], ['DIGIT5', '5'],
+        ['DIGIT6', '6'], ['DIGIT7', '7'], ['DIGIT8', '8'], ['DIGIT9', '9'], ['DIGIT0', '0'],
+        ['ONE', '1'], ['TWO', '2'], ['THREE', '3'], ['FOUR', '4'], ['FIVE', '5'],
+        ['SIX', '6'], ['SEVEN', '7'], ['EIGHT', '8'], ['NINE', '9'], ['ZERO', '0'],
+    ] as const;
+    for (const [prop, label] of digitAliases) {
+        if (typeof K[prop] === 'number') map[K[prop]] = label;
+    }
+
+    // Numpad 0..9
+    const numpad = [
+        ['NUMPAD0', 'Num0'], ['NUMPAD1', 'Num1'], ['NUMPAD2', 'Num2'], ['NUMPAD3', 'Num3'], ['NUMPAD4', 'Num4'],
+        ['NUMPAD5', 'Num5'], ['NUMPAD6', 'Num6'], ['NUMPAD7', 'Num7'], ['NUMPAD8', 'Num8'], ['NUMPAD9', 'Num9'],
+    ] as const;
+    for (const [prop, label] of numpad) {
+        if (typeof K[prop] === 'number') map[K[prop]] = label;
+    }
+
+    // F1..F24
+    for (let i = 1; i <= 24; i++) {
+        const prop = `F${i}`;
+        if (typeof K[prop] === 'number') map[K[prop]] = prop;
+    }
+
+    // Частые спецклавиши (названия могут отличаться между версиями — добавлены альтернативы)
+    const specials: Array<[string, string]> = [
+        ['Space', 'Space'], ['SPACE', 'Space'],
+        ['Enter', 'Enter'], ['RETURN', 'Enter'],
+        ['Escape', 'Esc'], ['ESCAPE', 'Esc'], ['ESC', 'Esc'],
+        ['Backspace', 'Backspace'], ['BACKSPACE', 'Backspace'],
+        ['Tab', 'Tab'], ['TAB', 'Tab'],
+        ['Insert', 'Insert'], ['INSERT', 'Insert'],
+        ['Delete', 'Delete'], ['DELETE', 'Delete'],
+        ['Home', 'Home'], ['HOME', 'Home'],
+        ['End', 'End'], ['END', 'End'],
+        ['PageUp', 'PageUp'], ['PAGE_UP', 'PageUp'],
+        ['PageDown', 'PageDown'], ['PAGE_DOWN', 'PageDown'],
+        ['ArrowLeft', 'ArrowLeft'], ['LEFT', 'ArrowLeft'],
+        ['ArrowRight', 'ArrowRight'], ['RIGHT', 'ArrowRight'],
+        ['ArrowUp', 'ArrowUp'], ['UP', 'ArrowUp'],
+        ['ArrowDown', 'ArrowDown'], ['DOWN', 'ArrowDown'],
+        ['Minus', '-'], ['EQUALS', '='],
+        ['BracketLeft', '['], ['BracketRight', ']'],
+        ['Backslash', '\\'], ['Semicolon', ';'], ['Quote', '\''],
+        ['Comma', ','], ['Period', '.'], ['Slash', '/'],
     ];
-    const idx = fn.indexOf(kc as typeof fn[number]);
-    if (idx >= 0) return `F${idx + 1}`;
-    return `KeyCode ${kc}`;
+    for (const [prop, label] of specials) {
+        if (typeof K[prop] === 'number') map[K[prop]] = label;
+    }
+
+    return map;
+}
+
+function keyLabel(kc: number): string {
+    return KEY_NAME_MAP[kc] ?? `KeyCode ${kc}`;
 }
 
 function mouseButtonLabel(btn?: number): string {
