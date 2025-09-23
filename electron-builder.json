@@ -185,8 +185,8 @@
         "to": "gpo"
       }
     ],
-    "signDlls": true,
-    "publisherName": "CN=\"Mattermost, Inc.\", O=\"Mattermost, Inc.\", L=Palo Alto, S=California, C=US"
+    "signDlls": false,
+    "verifyUpdateCodeSignature": false
   },
   "nsis": {
     "artifactName": "${version}/${name}-setup-${version}-win.${ext}",

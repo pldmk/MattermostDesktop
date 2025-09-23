@@ -1,7 +1,7 @@
 {
   "name": "mattermost-desktop",
   "productName": "Mattermost",
-  "version": "6.0.0",
+  "version": "6.0.2",
   "description": "Mattermost",
   "main": "dist/index.js",
   "author": "Mattermost, Inc. <feedback@mattermost.com>",
@@ -13,7 +13,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git://github.com/mattermost/desktop.git"
+    "url": "git@github.com:pldmk/MattermostDesktop.git"
   },
   "scripts": {
     "postinstall": "patch-package && electron-builder install-app-deps",
